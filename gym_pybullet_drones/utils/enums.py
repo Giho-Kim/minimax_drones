@@ -48,3 +48,18 @@ class ObservationType(Enum):
     RGB = "rgb"     # RGB camera capture in each drone's POV
     DEP = "dep"     # Depth camera capture in each drone's POV
     ALL = "all"     # Kinematic + RGBD
+
+################################################################################
+
+class BehaviorType(Enum):
+    """High-level (macro) behavior enumeration class.
+
+    Each value abstracts one of the four core tactical behaviors that an RL
+    policy can command. The low-level trajectory generation is hand-coded in
+    `gym_pybullet_drones.behaviors`.
+    """
+    IDLE    = "idle"     # Hold the current position (default / between macros)
+    TRANSIT = "transit"  # (1) Point-to-point move along the line of sight
+    RECON   = "recon"    # (2) Cover a disk around a center (lawnmower / spiral)
+    LOITER  = "loiter"   # (3) Circular orbit that tracks a (moving) target
+    STRIKE  = "strike"   # (4) Terminal dash that drives error to zero

@@ -1,3 +1,97 @@
+# gym-pybullet-drones — Tactical Behaviors & Swarm Extension
+
+> **This is a fork of [learnsyslab/gym-pybullet-drones](https://github.com/learnsyslab/gym-pybullet-drones)**
+> by [Jacopo Panerati](https://github.com/JacopoPan) and the [Learning Systems and Robotics Lab](https://github.com/learnsyslab).
+> Original work © 2020 Jacopo Panerati, MIT License. See [Citation](#citation) below.
+
+This fork adds hand-coded **macro behaviors** and **multi-drone swarm coordination** on top of the base simulator, enabling scripted tactical missions without reinforcement learning.
+
+---
+
+## What's New in This Fork
+
+### Behaviors — `gym_pybullet_drones/behaviors/`
+
+A finite-state machine (FSM) manager that sequences four macro behaviors for a single drone:
+
+| Behavior | Description |
+|---|---|
+| **Transit** | Point-to-point flight with trapezoidal velocity profile |
+| **Recon** | Lawnmower or spiral search over a disk-shaped area |
+| **Loiter** | Circular orbit tracking a (possibly moving) target |
+| **Strike** | Terminal dash onto a target with deceleration |
+
+### Swarm — `gym_pybullet_drones/swarm/`
+
+A `SwarmCoordinator` that assigns one shared mission across N drones:
+
+- **Task allocation** — splits Recon into per-drone bands or sectors; staggers Loiter phase angles
+- **Deconfliction** — reactive separation filter keeps drones apart (relaxed during Strike)
+- **Formation transit** — line-abreast formation for coordinated repositioning
+
+---
+
+## Running the Tactical Examples
+
+### Single drone: `tactical.py`
+
+```sh
+cd gym_pybullet_drones/examples/
+python tactical.py
+```
+
+The full mission runs in sequence: **Transit → Recon → Transit → Loiter → Strike**.
+Each phase transition is printed to the terminal with its timestamp.
+
+**Options:**
+
+| Flag | Default | Choices |
+|---|---|---|
+| `--behavior` | `all` | `all` \| `transit` \| `recon` \| `loiter` \| `strike` |
+| `--pattern` | `lawnmower` | `lawnmower` \| `spiral` |
+| `--gui` | `True` | `True` \| `False` |
+| `--plot` | `True` | `True` \| `False` |
+| `--duration_sec` | `0` | `0` = auto per behavior |
+| `--record_video` | `False` | `True` \| `False` |
+| `--output_folder` | `results` | any path |
+
+```sh
+python tactical.py --behavior recon --pattern spiral
+python tactical.py --behavior all --gui False --plot False   # headless
+python tactical.py --behavior strike --duration_sec 15
+```
+
+### Multi-drone swarm: `tactical_swarm.py`
+
+```sh
+cd gym_pybullet_drones/examples/
+python tactical_swarm.py --num_drones 4
+```
+
+Each drone is assigned its own sub-task per phase; paths are traced in distinct colors. A red sphere marks the (slowly drifting) target.
+
+**Options (additions over `tactical.py`):**
+
+| Flag | Default | Choices |
+|---|---|---|
+| `--num_drones` | `4` | any integer ≥ 2 |
+| `--partition` | `band` | `band` \| `sector` |
+| `--duration_sec` | `50` | any integer |
+
+```sh
+python tactical_swarm.py --num_drones 2
+python tactical_swarm.py --num_drones 6 --partition sector
+python tactical_swarm.py --num_drones 4 --gui False          # headless
+```
+
+---
+
+---
+
+<!-- ================================================================== -->
+<!-- Original gym-pybullet-drones README (upstream: learnsyslab/gym-pybullet-drones) -->
+<!-- ================================================================== -->
+
 > [!TIP]
 > For research work with **symbolic dynamics and constraints**, also try [`safe-control-gym`](https://github.com/learnsyslab/safe-control-gym)
 >
@@ -20,8 +114,8 @@ This is a minimalist refactoring of the original `gym-pybullet-drones` repositor
 Tested on Intel x64/Ubuntu 22.04 and Apple Silicon/macOS 26.2.
 
 ```sh
-git clone https://github.com/learnsyslab/gym-pybullet-drones.git
-cd gym-pybullet-drones/
+git clone https://github.com/Giho-Kim/minimax_drones.git
+cd minimax_drones/
 
 conda create -n drones python=3.10
 conda activate drones
@@ -122,23 +216,10 @@ If you wish, please cite our [IROS 2021 paper](https://arxiv.org/abs/2103.02142)
 - Benoit Landry (2014) [*Planning and Control for Quadrotor Flight through Cluttered Environments*](http://groups.csail.mit.edu/robotics-center/public_papers/Landry15)
 - Julian Forster (2015) [*System Identification of the Crazyflie 2.0 Nano Quadrocopter*](https://www.research-collection.ethz.ch/handle/20.500.11850/214143)
 - Antonin Raffin, Ashley Hill, Maximilian Ernestus, Adam Gleave, Anssi Kanervisto, and Noah Dormann (2019) [*Stable Baselines3*](https://github.com/DLR-RM/stable-baselines3)
-- Guanya Shi, Xichen Shi, Michael O’Connell, Rose Yu, Kamyar Azizzadenesheli, Animashree Anandkumar, Yisong Yue, and Soon-Jo Chung (2019)
+- Guanya Shi, Xichen Shi, Michael O'Connell, Rose Yu, Kamyar Azizzadenesheli, Animashree Anandkumar, Yisong Yue, and Soon-Jo Chung (2019)
 [*Neural Lander: Stable Drone Landing Control Using Learned Dynamics*](https://arxiv.org/pdf/1811.08027.pdf)
 - C. Karen Liu and Dan Negrut (2020) [*The Role of Physics-Based Simulators in Robotics*](https://www.annualreviews.org/doi/pdf/10.1146/annurev-control-072220-093055)
 - Yunlong Song, Selim Naji, Elia Kaufmann, Antonio Loquercio, and Davide Scaramuzza (2020) [*Flightmare: A Flexible Quadrotor Simulator*](https://arxiv.org/pdf/2009.00563.pdf)
 
 -----
 > UTIAS / [Learning Systems and Robotics Lab](https://github.com/learnsyslab) / [Vector Institute](https://github.com/VectorInstitute) / University of Cambridge's [Prorok Lab](https://github.com/proroklab)
-
-<!--
-## WIP/Desired Contributions/PRs
-
-- [ ] Multi-drone `crazyflie-firmware` SITL support
-- [ ] Use SITL services with steppable simulation
-- [ ] Add motor delay, advanced ESC modeling by implementing a buffer in `BaseAviary._dynamics()`
-- [ ] Replace `rpy` with quaternions (and `ang_vel` with body rates) by editing `BaseAviary._updateAndStoreKinematicInformation()`, `BaseAviary._getDroneStateVector()`, and the `.computeObs()` methods of relevant subclasses
-
-## Troubleshooting
-
-- On Ubuntu, with an NVIDIA card, if you receive a "Failed to create and OpenGL context" message, launch `nvidia-settings` and under "PRIME Profiles" select "NVIDIA (Performance Mode)", reboot and try again.
--->
