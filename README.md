@@ -31,6 +31,76 @@ A `SwarmCoordinator` that assigns one shared mission across N drones:
 
 ---
 
+## Behavior Implementation
+
+All behaviors share the same interface: `reset(state, **params)` initializes the trajectory from the current drone state, and `step(state) → Setpoint` is called once per control step. They have no PyBullet/gym dependency — they consume only the 20-dim state vector and emit position/velocity setpoints for the low-level PID.
+
+```
+BehaviorManager (FSM)
+├── mission queue: deque[(BehaviorType, params), ...]
+├── step(state) → Setpoint
+│     └── current behavior.is_done() → pop next → reset → step
+└── each behavior is a reusable instance (pre-allocated in registry)
+```
+
+### Transit
+
+Plans the full trapezoidal velocity profile at `reset` time. At each `step`, elapsed time `t` maps to an arc-length position along the straight line of sight.
+
+```
+long distance:  accelerate (t_acc) → cruise (t_cruise) → decelerate (t_acc)
+short distance: triangle profile (no cruise phase)
+```
+
+`done` when: planned time elapsed **and** drone physically within `reach_tol` of the goal (prevents FSM from advancing while the drone still lags).
+
+### Recon
+
+Computes the entire coverage polyline at `reset` time and stores it as a sequence of waypoints with cumulative arc lengths. At each `step`, integrates `s += speed * dt` and interpolates position along the polyline.
+
+Three coverage patterns:
+- **lawnmower** — back-and-forth scan lines clipped to the disk, spaced by `swath`
+- **spiral** — Archimedean spiral expanding to the disk radius
+- **sector** — polar boustrophedon (concentric arcs alternating direction); used for swarm sub-region splits
+
+`done` when: `s >= total_len` (polyline exhausted).
+
+### Loiter
+
+No pre-planning. At each `step`, computes the orbit angle `a = phase + ω*t` and emits the corresponding point on the circle. If the target is a callable, the orbit center follows it in real time.
+
+```python
+orbit_radius = standoff_alt / tan(depression_deg)  # derived from sensor FOV
+omega        = orbit_speed / orbit_radius
+pos          = center + [R*cos(a), R*sin(a), standoff_alt]
+yaw          = towards center (sensor stares inward)
+```
+
+`done` when: `t >= duration`.
+
+### Strike
+
+No pre-planning. At each `step`, recomputes the vector from current position to target and pins the position setpoint to the target while pushing a strong velocity feed-forward. Speed is ramped down linearly within `decel_dist` to prevent overshoot.
+
+```python
+speed = dash_speed * min(1.0, dist / decel_dist)
+Setpoint(pos=target, vel=speed * direction, relax_safety=True)
+```
+
+`done` when: `dist < hit_radius` (impact) or `timeout` exceeded.
+
+### Summary
+
+| | Transit | Recon | Loiter | Strike |
+|---|---|---|---|---|
+| Planning | at `reset` (full profile) | at `reset` (full polyline) | none (per-step) | none (per-step) |
+| Moving target | no | no | yes (callable) | yes (callable) |
+| `done` trigger | physical arrival | arc length exhausted | elapsed time | distance or timeout |
+
+Transit and Recon are **open-loop** trajectory followers; Loiter and Strike are **closed-loop** target trackers.
+
+---
+
 ## Running the Tactical Examples
 
 ### Single drone: `tactical.py`
