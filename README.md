@@ -153,16 +153,14 @@ Each drone enters the orbit at its **current bearing** from the target — no ex
 
 ### Strike (swarm)
 
-Rather than all drones converging on a single point, each is assigned a **distinct impact point** on a small ring around the target, derived from its current loiter bearing. This creates a simultaneous multi-angle saturation strike with no path crossings.
+The drone **closest to the target** at the moment the strike phase begins is selected as the sole striker; the rest hold position (IDLE). This avoids the separation filter blocking simultaneous convergences from multiple drones.
 
 ```
-ring radius 0.4 m around target:
-drone 0 → target + [0.4·cos(θ₀), 0.4·sin(θ₀), 0]
-drone 1 → target + [0.4·cos(θ₁), 0.4·sin(θ₁), 0]   (θₖ matched to current bearing)
-...
+striker  → the closest drone dashes straight onto the target
+others   → hold in place at their loiter positions
 ```
 
-`relax_safety=True` is set on every Strike setpoint so the separation filter does not brake the terminal dash.
+`relax_safety=True` is set on the striker's setpoints so the separation filter does not brake the terminal dash.
 
 ### Swarm phase summary
 
@@ -172,7 +170,7 @@ drone 1 → target + [0.4·cos(θ₁), 0.4·sin(θ₁), 0]   (θₖ matched to c
 | Recon | staggered full-disk patterns (lawnmower or spiral) | altitude layer per drone |
 | Transit (ring) | N ring slots on loiter orbit | slot assigned by bearing + altitude layers |
 | Loiter | same params for all (current bearing as entry) | orbit spread from ring transit |
-| Strike | N distinct impact points on ring around target | bearing-matched assignment, `relax_safety` |
+| Strike | closest drone strikes; others hold (IDLE) | single convergence avoids separation filter |
 
 ---
 

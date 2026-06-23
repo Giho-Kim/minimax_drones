@@ -15,6 +15,7 @@ per-drone ``(BehaviorType, params)`` list the FSMs consume.
 """
 import numpy as np
 
+from gym_pybullet_drones.behaviors.base_behavior import POS
 from gym_pybullet_drones.utils.enums import BehaviorType
 
 
@@ -160,19 +161,16 @@ def expand(macro, num_drones, states):
         return [(bt, base) for _ in range(n)]
 
     if bt == BehaviorType.STRIKE:
-        # Saturation strike: assign each drone a distinct impact point on a
-        # small ring around the target so they converge from different bearings
-        # instead of piling onto an identical point. Match impact points to the
-        # drones by current bearing, so each dashes straight in (no crossing).
-        ring = base.get("ring", 0.4)
+        # Single-drone strike: the closest drone dashes onto the target;
+        # the rest hold in place. Avoids the separation filter blocking
+        # multiple simultaneous convergences.
         tgt = base["target"]
         params = _without(base, "ring")
         center = np.asarray(tgt(0.0) if callable(tgt) else tgt, dtype=float)
-        offsets = [np.array([ring * np.cos(2.0 * np.pi * k / n),
-                             ring * np.sin(2.0 * np.pi * k / n), 0.0])
-                   for k in range(n)]
-        assigned = _assign_by_bearing(offsets, states, center)
-        return [(bt, {**params, "target": _offset_target(tgt, assigned[k])})
+        dists = [np.linalg.norm(np.array(states[k][POS]) - center) for k in range(n)]
+        striker = int(np.argmin(dists))
+        return [(bt, {**params, "target": tgt}) if k == striker
+                else (BehaviorType.IDLE, {})
                 for k in range(n)]
 
     # IDLE or anything else: hold.

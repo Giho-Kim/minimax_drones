@@ -59,12 +59,14 @@ class Strike(BaseBehavior):
         dist = float(np.linalg.norm(err))
         direction = err / dist if dist > 1e-6 else np.zeros(3)
 
-        # Pin the position setpoint to the target (zero terminal error) and
-        # push a strong velocity feed-forward for the max-acceleration dash,
-        # ramped down within decel_dist so the drone converges instead of
-        # blasting through the target.
-        speed = self.dash_speed * min(1.0, dist / self.decel_dist)
+        # Decel ramp floored at 25% so the feed-forward never stalls on final
+        # approach. Position setpoint is projected just past the target by
+        # hit_radius so the PID error always points through the hit sphere
+        # rather than stopping at it.
+        frac = max(0.25, min(1.0, dist / self.decel_dist))
+        speed = self.dash_speed * frac
         vel = speed * direction
+        aim = tgt + direction * self.hit_radius
         yaw = self._yaw_towards(pos, tgt)
 
         self.t += self.dt
@@ -73,5 +75,5 @@ class Strike(BaseBehavior):
             self._done = True
         elif self.t >= self.timeout:
             self._done = True
-        return Setpoint(pos=tgt, rpy=np.array([0.0, 0.0, yaw]), vel=vel,
+        return Setpoint(pos=aim, rpy=np.array([0.0, 0.0, yaw]), vel=vel,
                         relax_safety=True)

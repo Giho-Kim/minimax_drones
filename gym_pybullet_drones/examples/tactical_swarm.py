@@ -66,9 +66,8 @@ DRONE_COLORS = [
     [0.7, 0.2, 1.0], [0.0, 0.8, 0.8], [1.0, 0.4, 0.7], [0.6, 0.6, 0.6],
 ]
 
-# Moving target: an elevated target that drifts slowly in +x. Keeping it off
-# the ground means the terminal strike does not overshoot into the floor.
-TARGET_START = np.array([0.0, 0.0, 0.0])
+# Moving target: kept off the ground so the terminal strike converges cleanly.
+TARGET_START = np.array([0.0, 0.0, 0.5])
 TARGET_VEL = np.array([0.02, 0.0, 0.0])
 RECON_CENTER = np.array([0.0, 0.0, 1.0])
 
@@ -115,8 +114,8 @@ def build_mission(clock, recon_mode, behavior='all', transit_mode='formation'):
                 "params": {"target": tgt, "standoff_alt": orbit_radius,
                            "radius": orbit_radius, "orbit_speed": 0.4, "duration": 8.0}}
     strike   = {"type": BehaviorType.STRIKE, "mode": None,
-                "params": {"target": tgt, "dash_speed": 1.0, "hit_radius": 0.12,
-                           "ring": 0.4, "decel_dist": 0.5}}
+                "params": {"target": tgt, "dash_speed": 1.6, "hit_radius": 0.15,
+                           "ring": 0.3, "decel_dist": 0.4}}
 
     transit_single = transit_ring if transit_mode == 'ring' else transit1
     full = [transit1, recon, transit_ring, loiter, strike]

@@ -65,7 +65,7 @@ TRACE_COLOR = {
 }
 
 # Moving target: starts here and drifts slowly in +x during loiter/strike.
-TARGET_START = np.array([0.0, 0.0, 0.0])
+TARGET_START = np.array([0.0, 0.0, 0.5])
 TARGET_VEL = np.array([0.06, 0.0, 0.0])
 
 
