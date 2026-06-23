@@ -101,6 +101,82 @@ Transit and Recon are **open-loop** trajectory followers; Loiter and Strike are 
 
 ---
 
+## Swarm Behavior
+
+In the swarm, a single macro command is expanded by `allocation.expand()` into one sub-task per drone. A **phase barrier** in `SwarmCoordinator` ensures every drone finishes the current phase before the swarm advances to the next — the slowest drone sets the pace.
+
+### Transit (swarm)
+
+One shared target is converted into N formation slots, then assigned to drones in a way that prevents path crossings.
+
+**`mode="formation"` — line-abreast to a waypoint**
+
+```
+shared target: [1.2, 0.0, 1.0]
+
+drone 0 → [1.2, -0.75, 1.0]
+drone 1 → [1.2,  0.00, 1.0]   (4 drones, 0.5 m spacing along y)
+drone 2 → [1.2, +0.75, 1.0]
+drone 3 → [1.2, +1.50, 1.0]
+```
+
+Slots are matched to drones in current along-axis order so transit paths stay parallel and never cross (`_assign_no_cross`).
+
+**`mode="ring"` — spread onto the loiter orbit before Loiter begins**
+
+Each drone is sent to the ring slot nearest its current bearing (`_assign_ring`). Because paths from a one-sided approach can cross in 2D, each drone flies at a slightly different altitude layer during this leg; Loiter then pulls them back to a common altitude.
+
+### Recon (swarm)
+
+The search disk is split into N non-overlapping sub-regions, one per drone, so the entire area is covered in parallel. Adjacent sub-regions are assigned different altitude layers to deconflict drones near shared boundaries.
+
+**`mode="band"` (default) — horizontal strips**
+
+```
+disk radius R split into N equal-width bands along y:
+drone 0: y ∈ [-R,  -R+2R/N]
+drone 1: y ∈ [-R+2R/N, -R+4R/N]
+...                               each drone runs lawnmower within its band
+```
+
+**`mode="sector"` — angular wedges**
+
+```
+disk split into N equal angular sectors over [0, 2π):
+drone 0: θ ∈ [0,      2π/N]
+drone 1: θ ∈ [2π/N,   4π/N]
+...                               each drone runs a polar boustrophedon sweep
+```
+
+### Loiter (swarm)
+
+Each drone enters the orbit at its **current bearing** from the target — no explicit phase assignment. Because the preceding `ring` Transit already spread the drones evenly around the orbit, they naturally arrive at equally spaced angles and maintain that spacing while orbiting. All drones share the same target (callable), so the orbit center follows the target if it moves.
+
+### Strike (swarm)
+
+Rather than all drones converging on a single point, each is assigned a **distinct impact point** on a small ring around the target, derived from its current loiter bearing. This creates a simultaneous multi-angle saturation strike with no path crossings.
+
+```
+ring radius 0.4 m around target:
+drone 0 → target + [0.4·cos(θ₀), 0.4·sin(θ₀), 0]
+drone 1 → target + [0.4·cos(θ₁), 0.4·sin(θ₁), 0]   (θₖ matched to current bearing)
+...
+```
+
+`relax_safety=True` is set on every Strike setpoint so the separation filter does not brake the terminal dash.
+
+### Swarm phase summary
+
+| Phase | Allocation | Deconfliction |
+|---|---|---|
+| Transit (formation) | N formation slots from 1 target | slot assigned by along-axis order |
+| Recon | N sub-regions (bands or sectors) | altitude layer per drone |
+| Transit (ring) | N ring slots on loiter orbit | slot assigned by bearing + altitude layers |
+| Loiter | same params for all (current bearing as entry) | orbit spread from ring transit |
+| Strike | N distinct impact points on ring around target | bearing-matched assignment, `relax_safety` |
+
+---
+
 ## Running the Tactical Examples
 
 ### Single drone: `tactical.py`
