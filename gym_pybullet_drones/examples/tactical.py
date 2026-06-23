@@ -65,7 +65,7 @@ TRACE_COLOR = {
 }
 
 # Moving target: starts here and drifts slowly in +x during loiter/strike.
-TARGET_START = np.array([3.0, 2.4, 0.15])
+TARGET_START = np.array([0.0, 0.0, 0.0])
 TARGET_VEL = np.array([0.06, 0.0, 0.0])
 
 
@@ -112,6 +112,12 @@ def run(drone=DEFAULT_DRONE, physics=DEFAULT_PHYSICS, gui=DEFAULT_GUI,
                      user_debug_gui=False,
                      output_folder=output_folder)
     PYB_CLIENT = env.getPyBulletClient()
+
+    if gui:
+        p.resetDebugVisualizerCamera(cameraDistance=4.0, cameraYaw=0,
+                                     cameraPitch=-89.9,
+                                     cameraTargetPosition=TARGET_START.tolist(),
+                                     physicsClientId=PYB_CLIENT)
 
     #### Low-level PID #########################################
     ctrl = DSLPIDControl(drone_model=drone)

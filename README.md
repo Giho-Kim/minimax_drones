@@ -25,7 +25,7 @@ A finite-state machine (FSM) manager that sequences four macro behaviors for a s
 
 A `SwarmCoordinator` that assigns one shared mission across N drones:
 
-- **Task allocation** — splits Recon into per-drone bands or sectors; staggers Loiter phase angles
+- **Task allocation** — splits Recon across drones with staggered search patterns (lawnmower or spiral); staggers Loiter phase angles
 - **Deconfliction** — reactive separation filter keeps drones apart (relaxed during Strike)
 - **Formation transit** — line-abreast formation for coordinated repositioning
 
@@ -58,10 +58,9 @@ short distance: triangle profile (no cruise phase)
 
 Computes the entire coverage polyline at `reset` time and stores it as a sequence of waypoints with cumulative arc lengths. At each `step`, integrates `s += speed * dt` and interpolates position along the polyline.
 
-Three coverage patterns:
-- **lawnmower** — back-and-forth scan lines clipped to the disk, spaced by `swath`
-- **spiral** — Archimedean spiral expanding to the disk radius
-- **sector** — polar boustrophedon (concentric arcs alternating direction); used for swarm sub-region splits
+Two coverage patterns (selected via `--recon_mode` in the swarm, `--pattern` in the single-drone demo):
+- **lawnmower** — square (rectilinear) spiral expanding outward from the center with right-angle turns; same radial growth rate as the Archimedean spiral
+- **spiral** — Archimedean spiral expanding outward from the center
 
 `done` when: `s >= total_len` (polyline exhausted).
 
@@ -128,24 +127,24 @@ Each drone is sent to the ring slot nearest its current bearing (`_assign_ring`)
 
 ### Recon (swarm)
 
-The search disk is split into N non-overlapping sub-regions, one per drone, so the entire area is covered in parallel. Adjacent sub-regions are assigned different altitude layers to deconflict drones near shared boundaries.
+Each drone runs a full-disk search pattern with a rotated starting angle (`phase_offset = 2π·k/N`), so the swarm fans out from different directions simultaneously. Altitude layers keep interlaced paths vertically deconflicted.
 
-**`mode="band"` (default) — horizontal strips**
-
-```
-disk radius R split into N equal-width bands along y:
-drone 0: y ∈ [-R,  -R+2R/N]
-drone 1: y ∈ [-R+2R/N, -R+4R/N]
-...                               each drone runs lawnmower within its band
-```
-
-**`mode="sector"` — angular wedges**
+**`mode="lawnmower"` (default) — staggered square spirals**
 
 ```
-disk split into N equal angular sectors over [0, 2π):
-drone 0: θ ∈ [0,      2π/N]
-drone 1: θ ∈ [2π/N,   4π/N]
-...                               each drone runs a polar boustrophedon sweep
+drone 0: square spiral, phase_offset = 0
+drone 1: square spiral, phase_offset = 2π/N
+drone 2: square spiral, phase_offset = 4π/N
+...        each drone expands outward from center with right-angle turns
+```
+
+**`mode="spiral"` — staggered Archimedean spirals**
+
+```
+drone 0: spiral, phase_offset = 0
+drone 1: spiral, phase_offset = 2π/N
+drone 2: spiral, phase_offset = 4π/N
+...        each drone expands outward from center with smooth arcs
 ```
 
 ### Loiter (swarm)
@@ -170,7 +169,7 @@ drone 1 → target + [0.4·cos(θ₁), 0.4·sin(θ₁), 0]   (θₖ matched to c
 | Phase | Allocation | Deconfliction |
 |---|---|---|
 | Transit (formation) | N formation slots from 1 target | slot assigned by along-axis order |
-| Recon | N sub-regions (bands or sectors) | altitude layer per drone |
+| Recon | staggered full-disk patterns (lawnmower or spiral) | altitude layer per drone |
 | Transit (ring) | N ring slots on loiter orbit | slot assigned by bearing + altitude layers |
 | Loiter | same params for all (current bearing as entry) | orbit spread from ring transit |
 | Strike | N distinct impact points on ring around target | bearing-matched assignment, `relax_safety` |
@@ -214,16 +213,16 @@ cd gym_pybullet_drones/examples/
 python tactical_swarm.py --num_drones 4
 ```
 
-Each drone is assigned its own sub-task per phase; paths are traced in distinct colors. A red sphere marks the (slowly drifting) target.
+Each drone is assigned its own sub-task per phase; paths are traced in distinct colors. A red sphere marks the (slowly drifting) target; a blue sphere marks the recon search center.
 
 **`--behavior all` full sequence:**
 
 ```
-1. Transit  (formation)  line-abreast to the search area         [transit_mode fixed: formation]
-2. Recon    (band/sector) split-coverage of the search disk      [recon_mode selectable]
-3. Transit  (ring)       spread onto the loiter orbit ring       [always ring, not selectable]
-4. Loiter                orbit the target, evenly spaced
-5. Strike                simultaneous multi-angle dash onto target
+1. Transit  (formation)   line-abreast to the search area          [transit_mode fixed: formation]
+2. Recon    (lawnmower/spiral) staggered full-disk search patterns  [recon_mode selectable]
+3. Transit  (ring)        spread onto the loiter orbit ring         [always ring, not selectable]
+4. Loiter                 orbit the target, evenly spaced
+5. Strike                 simultaneous multi-angle dash onto target
 ```
 
 **Options:**
@@ -233,7 +232,7 @@ Each drone is assigned its own sub-task per phase; paths are traced in distinct 
 | `--num_drones` | `4` | any integer ≥ 2 | all |
 | `--behavior` | `all` | `all` \| `transit` \| `recon` \| `loiter` \| `strike` | — |
 | `--transit_mode` | `formation` | `formation` \| `ring` | `--behavior transit` only |
-| `--recon_mode` | `band` | `band` \| `sector` | `--behavior recon` and `all` |
+| `--recon_mode` | `lawnmower` | `lawnmower` \| `spiral` | `--behavior recon` and `all` |
 | `--duration_sec` | `0` | `0` = auto per behavior | all |
 | `--gui` | `True` | `True` \| `False` | all |
 | `--plot` | `True` | `True` \| `False` | all |
@@ -243,9 +242,9 @@ Each drone is assigned its own sub-task per phase; paths are traced in distinct 
 
 ```sh
 python tactical_swarm.py --num_drones 4
-python tactical_swarm.py --num_drones 4 --recon_mode sector
+python tactical_swarm.py --num_drones 4 --recon_mode spiral
 python tactical_swarm.py --behavior transit --transit_mode ring --num_drones 3
-python tactical_swarm.py --behavior recon --recon_mode sector --num_drones 4
+python tactical_swarm.py --behavior recon --recon_mode spiral --num_drones 4
 python tactical_swarm.py --num_drones 4 --gui False          # headless
 ```
 

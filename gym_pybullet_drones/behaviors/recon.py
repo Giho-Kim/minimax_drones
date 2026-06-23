@@ -22,7 +22,7 @@ class Recon(BaseBehavior):
     name = "recon"
 
     def reset(self, state, center, radius, pattern="lawnmower", swath=0.5,
-              speed=0.6, altitude=None, region=None, **_):
+              speed=0.6, altitude=None, region=None, phase_offset=0.0, **_):
         """Plan a coverage polyline over the disk and start following it.
 
         Parameters
@@ -58,6 +58,7 @@ class Recon(BaseBehavior):
         self.speed = float(speed)
         self.alt = float(center[2] if altitude is None else altitude)
         self.region = region
+        self.phase_offset = float(phase_offset)
 
         # Scan-line y-limits (a "band" region restricts them; else full disk).
         if region is not None and region[0] == "band":
@@ -66,15 +67,12 @@ class Recon(BaseBehavior):
         else:
             self.y_lo, self.y_hi = -self.radius, self.radius
 
-        if region is not None and region[0] == "sector":
-            # A sector sub-region gets a dedicated continuous wedge sweep,
-            # regardless of the requested pattern (filtering a spiral to a wedge
-            # leaves jumpy, disconnected arcs).
-            pts = self._sector_pattern(float(region[1]), float(region[2]))
-        elif pattern == "spiral":
+        if pattern == "spiral":
             pts = self._spiral_pattern()
-        else:
+        elif region is not None and region[0] == "band":
             pts = self._lawnmower_pattern()
+        else:
+            pts = self._square_spiral_pattern()
 
         # Clip to the assigned region (handles "sector"; "band" already limited).
         pts = [pt for pt in pts if self._in_region(pt)]
@@ -111,7 +109,7 @@ class Recon(BaseBehavior):
         """Boustrophedon (back-and-forth) scan lines clipped to the disk."""
         R = self.radius
         pts = []
-        ys = np.arange(self.y_lo, self.y_hi + 1e-9, self.swath)
+        ys = np.arange(self.y_lo + self.swath / 2.0, self.y_hi + 1e-9, self.swath)
         for k, y in enumerate(ys):
             half = np.sqrt(max(R ** 2 - y ** 2, 0.0))  # x-extent of the chord
             if half < 1e-6:
@@ -119,6 +117,33 @@ class Recon(BaseBehavior):
             xs = [-half, half] if k % 2 == 0 else [half, -half]
             for x in xs:
                 pts.append(self.center + np.array([x, y, self.alt - self.center[2]]))
+        return pts
+
+    def _square_spiral_pattern(self):
+        """Square (rectilinear) spiral expanding outward from the center.
+
+        Follows the same outward-expanding feel as the Archimedean spiral but
+        with right-angle turns.  ``phase_offset`` rotates the whole spiral so
+        multiple drones fan out from different starting directions.
+        """
+        R = self.radius
+        b = self.swath / (2.0 * np.pi)   # same radial growth rate as Archimedean spiral
+        theta_max = R / b if b > 0 else 0.0
+        n = max(int(theta_max / (np.pi / 8)), 2)  # same sample density as spiral
+        thetas = np.linspace(0.0, theta_max, n)
+        cos_p, sin_p = np.cos(self.phase_offset), np.sin(self.phase_offset)
+        z_off = self.alt - self.center[2]
+        pts = []
+        for th in thetas:
+            r = min(b * th, R)
+            a = th + self.phase_offset
+            cos_a, sin_a = np.cos(a), np.sin(a)
+            # Project circle direction onto unit-square boundary so the path
+            # expands like the Archimedean spiral but with right-angle sides.
+            scale = max(abs(cos_a), abs(sin_a))
+            ux = cos_a / scale if scale > 1e-9 else 0.0
+            uy = sin_a / scale if scale > 1e-9 else 0.0
+            pts.append(self.center + np.array([r * ux, r * uy, z_off]))
         return pts
 
     def _spiral_pattern(self):
@@ -132,7 +157,8 @@ class Recon(BaseBehavior):
         pts = []
         for th in thetas:
             r = min(b * th, R)
-            x, y = r * np.cos(th), r * np.sin(th)
+            a = th + self.phase_offset
+            x, y = r * np.cos(a), r * np.sin(a)
             pts.append(self.center + np.array([x, y, self.alt - self.center[2]]))
         return pts
 

@@ -42,7 +42,7 @@ DEFAULT_RECORD_VIDEO = False
 DEFAULT_PLOT = True
 DEFAULT_BEHAVIOR = 'all'
 DEFAULT_TRANSIT_MODE = 'formation'
-DEFAULT_RECON_MODE = 'band'
+DEFAULT_RECON_MODE = 'lawnmower'
 DEFAULT_SIMULATION_FREQ_HZ = 240
 DEFAULT_CONTROL_FREQ_HZ = 48
 DEFAULT_DURATION_SEC = 0            # 0 = auto per behavior
@@ -50,7 +50,7 @@ DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_COLAB = False
 BEHAVIOR_CHOICES = ['all', 'transit', 'recon', 'loiter', 'strike']
 TRANSIT_MODE_CHOICES = ['formation', 'ring']
-RECON_MODE_CHOICES = ['band', 'sector']
+RECON_MODE_CHOICES = ['lawnmower', 'spiral']
 AUTO_DURATION = {'all': 50, 'transit': 12, 'recon': 25, 'loiter': 15, 'strike': 15}
 
 # Fraction of each behavior's velocity feed-forward passed to the PID. The tiny
@@ -68,8 +68,9 @@ DRONE_COLORS = [
 
 # Moving target: an elevated target that drifts slowly in +x. Keeping it off
 # the ground means the terminal strike does not overshoot into the floor.
-TARGET_START = np.array([2.2, 1.0, 0.5])
+TARGET_START = np.array([0.0, 0.0, 0.0])
 TARGET_VEL = np.array([0.02, 0.0, 0.0])
+RECON_CENTER = np.array([0.0, 0.0, 1.0])
 
 
 def target_at(t_sim):
@@ -98,19 +99,18 @@ def build_mission(clock, recon_mode, behavior='all', transit_mode='formation'):
     def tgt(_unused, _clock=clock):
         return target_at(_clock.shared)
 
-    recon_pattern = "spiral" if recon_mode == "sector" else "lawnmower"
     orbit_radius = 0.6
     orbit_alt = float(TARGET_START[2] + orbit_radius)
 
     transit1 = {"type": BehaviorType.TRANSIT, "mode": "formation",
-                "params": {"target": [1.2, 0.0, 1.0], "spacing": 0.5,
-                           "v_max": 0.5, "a_max": 0.6}}
+                "params": {"target": [RECON_CENTER[0], RECON_CENTER[1], RECON_CENTER[2]],
+                           "spacing": 0.5, "v_max": 0.5, "a_max": 0.6}}
     transit_ring = {"type": BehaviorType.TRANSIT, "mode": "ring",
                     "params": {"center": [TARGET_START[0], TARGET_START[1], orbit_alt],
                                "radius": orbit_radius, "v_max": 0.5, "a_max": 0.6}}
     recon    = {"type": BehaviorType.RECON, "mode": recon_mode,
-                "params": {"center": [1.2, 1.0, 1.0], "radius": 0.7,
-                           "pattern": recon_pattern, "swath": 0.4, "speed": 0.4}}
+                "params": {"center": RECON_CENTER.tolist(), "radius": 0.7,
+                           "swath": 0.4, "speed": 0.4}}
     loiter   = {"type": BehaviorType.LOITER, "mode": None,
                 "params": {"target": tgt, "standoff_alt": orbit_radius,
                            "radius": orbit_radius, "orbit_speed": 0.4, "duration": 8.0}}
@@ -141,7 +141,8 @@ def _init_xyzs(behavior, num_drones, transit_mode='formation'):
         return np.array([[0.6 * (i - (num_drones - 1) / 2.0), 0.0, 0.1]
                          for i in range(num_drones)])
     if behavior == 'recon':
-        return np.array([[0.5 * (i - (num_drones - 1) / 2.0) + 1.2, 0.0, 1.0]
+        cx, cy, cz = RECON_CENTER
+        return np.array([[cx + 0.5 * (i - (num_drones - 1) / 2.0), cy - 1.0, cz]
                          for i in range(num_drones)])
     # loiter / strike: spread evenly on the orbit ring above the target
     orbit_radius = 0.6
@@ -183,6 +184,12 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
                      output_folder=output_folder)
     PYB_CLIENT = env.getPyBulletClient()
 
+    if gui:
+        p.resetDebugVisualizerCamera(cameraDistance=5.0, cameraYaw=0,
+                                     cameraPitch=-89.9,
+                                     cameraTargetPosition=TARGET_START.tolist(),
+                                     physicsClientId=PYB_CLIENT)
+
     #### Swarm coordinator + per-drone PID #####################
     clock = _Clock()
     coordinator = SwarmCoordinator(num_drones=num_drones,
@@ -190,8 +197,9 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
                                    mission=build_mission(clock, recon_mode, behavior, transit_mode))
     ctrl = [DSLPIDControl(drone_model=drone) for _ in range(num_drones)]
 
-    #### Visual-only target marker #############################
+    #### Visual-only markers ###################################
     target_marker = None
+    recon_marker = None
     if gui:
         vis = p.createVisualShape(p.GEOM_SPHERE, radius=0.08,
                                   rgbaColor=[1, 0, 0, 1], physicsClientId=PYB_CLIENT)
@@ -199,6 +207,12 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
                                           baseVisualShapeIndex=vis,
                                           basePosition=TARGET_START.tolist(),
                                           physicsClientId=PYB_CLIENT)
+        recon_vis = p.createVisualShape(p.GEOM_SPHERE, radius=0.08,
+                                        rgbaColor=[0, 0.5, 1, 1], physicsClientId=PYB_CLIENT)
+        recon_marker = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1,
+                                         baseVisualShapeIndex=recon_vis,
+                                         basePosition=RECON_CENTER.tolist(),
+                                         physicsClientId=PYB_CLIENT)
 
     #### Logger (preallocated so the full run logs cleanly) ####
     logger = Logger(logging_freq_hz=control_freq_hz, num_drones=num_drones,

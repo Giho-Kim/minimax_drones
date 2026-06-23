@@ -115,12 +115,18 @@ def expand(macro, num_drones, states):
             # to cross, give each drone a distinct altitude layer for this leg
             # so crossings are vertically deconflicted; the loiter then pulls
             # them back to a common altitude (a gentle vertical move).
-            center = base["center"]
+            center = np.asarray(base["center"], dtype=float)
             layer_gap = base.get("layer_gap", 0.45)
+            min_alt = base.get("min_alt", 0.15)
+            # Shift the ring center up so the lowest layer stays above min_alt.
+            max_neg_layer = ((n - 1) / 2.0) * layer_gap
+            if center[2] - max_neg_layer < min_alt:
+                center = center.copy()
+                center[2] = min_alt + max_neg_layer
             slots = ring_slots(center, n, base["radius"])
             targets = _assign_ring(slots, states, center)
-            params = _without(_without(_without(base, "center"), "radius"),
-                              "layer_gap")
+            params = _without(_without(_without(_without(base, "center"), "radius"),
+                              "layer_gap"), "min_alt")
             out = []
             for k in range(n):
                 layer = (k - (n - 1) / 2.0) * layer_gap
@@ -130,22 +136,22 @@ def expand(macro, num_drones, states):
         return [(bt, base) for _ in range(n)]
 
     if bt == BehaviorType.RECON:
-        if mode == "sector":
-            regions = partition_sectors(n)
-            pattern = base.get("pattern", "spiral")
-        else:  # default: parallel bands
-            regions = partition_bands(base["radius"], n)
-            pattern = base.get("pattern", "lawnmower")
-        # Search each sub-region on its own altitude layer. Adjacent
-        # sub-regions share a boundary the drones both cover; separating them
-        # vertically deconflicts those boundaries cleanly (the horizontal
-        # filter cannot, without tearing coverage gaps).
         cz = float(base["center"][2])
         gap = base.get("layer_gap", 0.3)
         params = _without(base, "layer_gap")
-        return [(bt, {**params, "pattern": pattern, "region": regions[k],
-                      "altitude": cz + (k - (n - 1) / 2.0) * gap})
-                for k in range(n)]
+        if mode == "spiral":
+            # Each drone flies a full Archimedean spiral rotated by 2π*k/n so
+            # the swarm fans out from different starting angles simultaneously.
+            # Altitude layers keep the interlaced paths vertically deconflicted.
+            return [(bt, {**params, "pattern": "spiral",
+                          "phase_offset": 2.0 * np.pi * k / n,
+                          "altitude": cz + (k - (n - 1) / 2.0) * gap})
+                    for k in range(n)]
+        else:  # lawnmower: square spiral with phase offsets
+            return [(bt, {**params, "pattern": "lawnmower",
+                          "phase_offset": 2.0 * np.pi * k / n,
+                          "altitude": cz + (k - (n - 1) / 2.0) * gap})
+                    for k in range(n)]
 
     if bt == BehaviorType.LOITER:
         # Each drone enters the orbit at its *current* bearing (no jump). The
