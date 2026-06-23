@@ -67,6 +67,7 @@ TRACE_COLOR = {
 # Moving target: starts here and drifts slowly in +x during loiter/strike.
 TARGET_START = np.array([0.0, 0.0, 0.5])
 TARGET_VEL = np.array([0.06, 0.0, 0.0])
+RECON_CENTER = np.array([1.5, 1.5, 1.0])
 
 
 def target_at(t_sim):
@@ -122,8 +123,9 @@ def run(drone=DEFAULT_DRONE, physics=DEFAULT_PHYSICS, gui=DEFAULT_GUI,
     #### Low-level PID #########################################
     ctrl = DSLPIDControl(drone_model=drone)
 
-    #### Visual-only target marker #############################
+    #### Visual-only markers ###################################
     target_marker = None
+    recon_marker = None
     if gui:
         vis = p.createVisualShape(p.GEOM_SPHERE, radius=0.08,
                                   rgbaColor=[1, 0, 0, 1], physicsClientId=PYB_CLIENT)
@@ -132,6 +134,12 @@ def run(drone=DEFAULT_DRONE, physics=DEFAULT_PHYSICS, gui=DEFAULT_GUI,
                                           baseVisualShapeIndex=vis,
                                           basePosition=TARGET_START.tolist(),
                                           physicsClientId=PYB_CLIENT)
+        recon_vis = p.createVisualShape(p.GEOM_SPHERE, radius=0.08,
+                                        rgbaColor=[0, 0.5, 1, 1], physicsClientId=PYB_CLIENT)
+        recon_marker = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1,
+                                         baseVisualShapeIndex=recon_vis,
+                                         basePosition=RECON_CENTER.tolist(),
+                                         physicsClientId=PYB_CLIENT)
 
     #### Logger (preallocated so the full run logs cleanly) ####
     logger = Logger(logging_freq_hz=control_freq_hz, num_drones=1,
@@ -221,7 +229,7 @@ def build_mission(manager, clock, behavior="all", pattern="lawnmower"):
 
     # (init position, [(BehaviorType, params), ...]) per single-behavior mode.
     transit = (BehaviorType.TRANSIT, dict(target=[1.5, 0.0, 1.0], v_max=0.7, a_max=1.0))
-    recon = (BehaviorType.RECON, dict(center=[1.5, 1.5, 1.0], radius=1.0,
+    recon = (BehaviorType.RECON, dict(center=RECON_CENTER.tolist(), radius=1.0,
                                       pattern=pattern, swath=0.5, speed=0.6))
     loiter = (BehaviorType.LOITER, dict(target=tgt, standoff_alt=0.8,
                                         depression_deg=45.0, orbit_speed=0.7,

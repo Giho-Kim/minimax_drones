@@ -184,7 +184,7 @@ python tactical.py
 ```
 
 The full mission runs in sequence: **Transit → Recon → Transit → Loiter → Strike**.
-Each phase transition is printed to the terminal with its timestamp.
+Each phase transition is printed to the terminal with its timestamp. A red sphere marks the (slowly drifting) target; a blue sphere marks the recon search center.
 
 **Options:**
 
