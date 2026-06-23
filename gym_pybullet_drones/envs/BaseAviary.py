@@ -482,6 +482,9 @@ class BaseAviary(gym.Env):
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=self.CLIENT)
         #### Load ground plane, drone and obstacles models #########
         self.PLANE_ID = p.loadURDF("plane.urdf", physicsClientId=self.CLIENT)
+        # Tint the checkerboard toward light grey (color multiplies the texture).
+        p.changeVisualShape(self.PLANE_ID, -1,
+                            rgbaColor=[0.8, 0.8, 0.8, 1], physicsClientId=self.CLIENT)
 
         self.DRONE_IDS = np.array([p.loadURDF(pkg_resources.resource_filename('gym_pybullet_drones', 'assets/'+self.URDF),
                                               self.INIT_XYZS[i,:],
