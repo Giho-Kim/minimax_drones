@@ -216,17 +216,36 @@ python tactical_swarm.py --num_drones 4
 
 Each drone is assigned its own sub-task per phase; paths are traced in distinct colors. A red sphere marks the (slowly drifting) target.
 
-**Options (additions over `tactical.py`):**
+**`--behavior all` full sequence:**
 
-| Flag | Default | Choices |
-|---|---|---|
-| `--num_drones` | `4` | any integer ≥ 2 |
-| `--partition` | `band` | `band` \| `sector` |
-| `--duration_sec` | `50` | any integer |
+```
+1. Transit  (formation)  line-abreast to the search area         [transit_mode fixed: formation]
+2. Recon    (band/sector) split-coverage of the search disk      [recon_mode selectable]
+3. Transit  (ring)       spread onto the loiter orbit ring       [always ring, not selectable]
+4. Loiter                orbit the target, evenly spaced
+5. Strike                simultaneous multi-angle dash onto target
+```
+
+**Options:**
+
+| Flag | Default | Choices | Applies to |
+|---|---|---|---|
+| `--num_drones` | `4` | any integer ≥ 2 | all |
+| `--behavior` | `all` | `all` \| `transit` \| `recon` \| `loiter` \| `strike` | — |
+| `--transit_mode` | `formation` | `formation` \| `ring` | `--behavior transit` only |
+| `--recon_mode` | `band` | `band` \| `sector` | `--behavior recon` and `all` |
+| `--duration_sec` | `0` | `0` = auto per behavior | all |
+| `--gui` | `True` | `True` \| `False` | all |
+| `--plot` | `True` | `True` \| `False` | all |
+
+> **Note:** `--transit_mode` only takes effect when `--behavior transit` is used in isolation.
+> In `--behavior all`, the two transits are fixed: the first is always `formation`, the second is always `ring`.
 
 ```sh
-python tactical_swarm.py --num_drones 2
-python tactical_swarm.py --num_drones 6 --partition sector
+python tactical_swarm.py --num_drones 4
+python tactical_swarm.py --num_drones 4 --recon_mode sector
+python tactical_swarm.py --behavior transit --transit_mode ring --num_drones 3
+python tactical_swarm.py --behavior recon --recon_mode sector --num_drones 4
 python tactical_swarm.py --num_drones 4 --gui False          # headless
 ```
 
