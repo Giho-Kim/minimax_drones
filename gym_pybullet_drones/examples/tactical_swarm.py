@@ -41,12 +41,15 @@ DEFAULT_GUI = True
 DEFAULT_RECORD_VIDEO = False
 DEFAULT_PLOT = True
 DEFAULT_PARTITION = 'band'          # recon split scheme: band | sector
+DEFAULT_BEHAVIOR = 'all'
 DEFAULT_SIMULATION_FREQ_HZ = 240
 DEFAULT_CONTROL_FREQ_HZ = 48
-DEFAULT_DURATION_SEC = 50
+DEFAULT_DURATION_SEC = 0            # 0 = auto per behavior
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_COLAB = False
 PARTITION_CHOICES = ['band', 'sector']
+BEHAVIOR_CHOICES = ['all', 'transit', 'recon', 'loiter', 'strike']
+AUTO_DURATION = {'all': 50, 'transit': 12, 'recon': 25, 'loiter': 15, 'strike': 15}
 
 # Fraction of each behavior's velocity feed-forward passed to the PID. The tiny
 # CF2X tends to tip and lose altitude when the feed-forward flips sharply (e.g.
@@ -77,51 +80,74 @@ class _Clock:
     shared = 0.0
 
 
-def build_mission(clock, partition):
-    """Cooperative mission: one macro per phase, split across the swarm."""
+def build_mission(clock, partition, behavior='all'):
+    """Cooperative mission: one macro per phase, split across the swarm.
+
+    Parameters
+    ----------
+    behavior : str
+        ``"all"`` runs the full sequence; otherwise one of
+        ``transit``/``recon``/``loiter``/``strike`` runs that single phase.
+    """
     def tgt(_unused, _clock=clock):
         return target_at(_clock.shared)
 
     recon_pattern = "spiral" if partition == "sector" else "lawnmower"
-    orbit_radius = 0.6        # loiter orbit radius; ring transit matches it
-    orbit_alt = float(TARGET_START[2] + orbit_radius)  # standoff above target
-    return [
-        # (1) Transit out to the search area, line-abreast formation.
-        {"type": BehaviorType.TRANSIT, "mode": "formation",
-         "params": {"target": [1.2, 0.0, 1.0], "spacing": 0.5,
-                    "v_max": 0.5, "a_max": 0.6}},
-        # (2) Recon: split the disk into bands (or sectors), one per drone.
-        {"type": BehaviorType.RECON, "mode": partition,
-         "params": {"center": [1.2, 1.0, 1.0], "radius": 0.7,
-                    "pattern": recon_pattern, "swath": 0.4, "speed": 0.4}},
-        # (3) Transit onto the loiter orbit ring (so loiter enters jump-free).
-        {"type": BehaviorType.TRANSIT, "mode": "ring",
-         "params": {"center": [TARGET_START[0], TARGET_START[1], orbit_alt],
-                    "radius": orbit_radius, "v_max": 0.5, "a_max": 0.6}},
-        # (4) Loiter: orbit the target, each drone entering at its ring bearing.
-        {"type": BehaviorType.LOITER, "mode": None,
-         "params": {"target": tgt, "standoff_alt": orbit_radius,
-                    "radius": orbit_radius, "orbit_speed": 0.4, "duration": 8.0}},
-        # (5) Strike: all dash onto the target from their loiter bearings.
-        {"type": BehaviorType.STRIKE, "mode": None,
-         "params": {"target": tgt, "dash_speed": 1.0, "hit_radius": 0.12,
-                    "ring": 0.4, "decel_dist": 0.5}},
-    ]
+    orbit_radius = 0.6
+    orbit_alt = float(TARGET_START[2] + orbit_radius)
+
+    transit1 = {"type": BehaviorType.TRANSIT, "mode": "formation",
+                "params": {"target": [1.2, 0.0, 1.0], "spacing": 0.5,
+                           "v_max": 0.5, "a_max": 0.6}}
+    recon    = {"type": BehaviorType.RECON, "mode": partition,
+                "params": {"center": [1.2, 1.0, 1.0], "radius": 0.7,
+                           "pattern": recon_pattern, "swath": 0.4, "speed": 0.4}}
+    transit2 = {"type": BehaviorType.TRANSIT, "mode": "ring",
+                "params": {"center": [TARGET_START[0], TARGET_START[1], orbit_alt],
+                           "radius": orbit_radius, "v_max": 0.5, "a_max": 0.6}}
+    loiter   = {"type": BehaviorType.LOITER, "mode": None,
+                "params": {"target": tgt, "standoff_alt": orbit_radius,
+                           "radius": orbit_radius, "orbit_speed": 0.4, "duration": 8.0}}
+    strike   = {"type": BehaviorType.STRIKE, "mode": None,
+                "params": {"target": tgt, "dash_speed": 1.0, "hit_radius": 0.12,
+                           "ring": 0.4, "decel_dist": 0.5}}
+
+    full = [transit1, recon, transit2, loiter, strike]
+    single = {'transit': [transit1], 'recon': [recon],
+              'loiter': [loiter], 'strike': [strike]}
+    return full if behavior == 'all' else single[behavior]
+
+
+def _init_xyzs(behavior, num_drones):
+    """Return (N, 3) spawn positions appropriate for the chosen behavior."""
+    if behavior in ('all', 'transit'):
+        return np.array([[0.6 * (i - (num_drones - 1) / 2.0), 0.0, 0.1]
+                         for i in range(num_drones)])
+    if behavior == 'recon':
+        return np.array([[0.5 * (i - (num_drones - 1) / 2.0) + 1.2, 0.0, 1.0]
+                         for i in range(num_drones)])
+    # loiter / strike: spread evenly on the orbit ring above the target
+    orbit_radius = 0.6
+    orbit_alt = float(TARGET_START[2] + orbit_radius)
+    angles = [2.0 * np.pi * k / num_drones for k in range(num_drones)]
+    return np.array([[TARGET_START[0] + orbit_radius * np.cos(a),
+                      TARGET_START[1] + orbit_radius * np.sin(a),
+                      orbit_alt]
+                     for a in angles])
 
 
 def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYSICS,
         gui=DEFAULT_GUI, record_video=DEFAULT_RECORD_VIDEO, plot=DEFAULT_PLOT,
-        partition=DEFAULT_PARTITION,
+        partition=DEFAULT_PARTITION, behavior=DEFAULT_BEHAVIOR,
         simulation_freq_hz=DEFAULT_SIMULATION_FREQ_HZ,
         control_freq_hz=DEFAULT_CONTROL_FREQ_HZ,
         duration_sec=DEFAULT_DURATION_SEC, output_folder=DEFAULT_OUTPUT_FOLDER,
         colab=DEFAULT_COLAB):
 
-    #### Initialize the swarm on a grid near the origin ########
-    # Space them >= the filter's d_min so there is no separation conflict on
-    # the ground during takeoff (which would tip these small drones over).
-    INIT_XYZS = np.array([[0.6 * (i - (num_drones - 1) / 2.0), 0.0, 0.1]
-                          for i in range(num_drones)])
+    if duration_sec in (0, None):
+        duration_sec = AUTO_DURATION[behavior]
+
+    INIT_XYZS = _init_xyzs(behavior, num_drones)
     INIT_RPYS = np.zeros((num_drones, 3))
 
     env = CtrlAviary(drone_model=drone,
@@ -143,7 +169,7 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
     clock = _Clock()
     coordinator = SwarmCoordinator(num_drones=num_drones,
                                    ctrl_freq=control_freq_hz,
-                                   mission=build_mission(clock, partition))
+                                   mission=build_mission(clock, partition, behavior))
     ctrl = [DSLPIDControl(drone_model=drone) for _ in range(num_drones)]
 
     #### Visual-only target marker #############################
@@ -234,6 +260,8 @@ if __name__ == "__main__":
                         help='Whether to record a video (default: False)', metavar='')
     parser.add_argument('--plot', default=DEFAULT_PLOT, type=str2bool,
                         help='Whether to plot the simulation results (default: True)', metavar='')
+    parser.add_argument('--behavior', default=DEFAULT_BEHAVIOR, type=str, choices=BEHAVIOR_CHOICES,
+                        help='Which behavior to run: all | transit | recon | loiter | strike (default: all)', metavar='')
     parser.add_argument('--partition', default=DEFAULT_PARTITION, type=str, choices=PARTITION_CHOICES,
                         help='Recon split scheme: band | sector (default: band)', metavar='')
     parser.add_argument('--simulation_freq_hz', default=DEFAULT_SIMULATION_FREQ_HZ, type=int,
@@ -241,7 +269,7 @@ if __name__ == "__main__":
     parser.add_argument('--control_freq_hz', default=DEFAULT_CONTROL_FREQ_HZ, type=int,
                         help='Control frequency in Hz (default: 48)', metavar='')
     parser.add_argument('--duration_sec', default=DEFAULT_DURATION_SEC, type=int,
-                        help='Duration of the simulation in seconds (default: 50)', metavar='')
+                        help='Duration in seconds (default: 0 = auto per behavior)', metavar='')
     parser.add_argument('--output_folder', default=DEFAULT_OUTPUT_FOLDER, type=str,
                         help='Folder where to save logs (default: "results")', metavar='')
     parser.add_argument('--colab', default=DEFAULT_COLAB, type=bool,
