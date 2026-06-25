@@ -4,13 +4,29 @@ RL command
     "Strike detected target T."
 
 Abstraction
-    Switch to a maximum-acceleration terminal dash that exceeds the cruise
-    speed. The safety filter constraints are (partially) relaxed -- signaled by
-    ``Setpoint.relax_safety`` -- and the trajectory drives the position error
-    between the drone and the target to zero in minimum time. The dash speed is
-    capped by ``dash_speed`` and commanded as a strong velocity feed-forward
-    along the line of sight, while the position setpoint is pinned to the
-    target so the controller converges precisely at impact.
+    A maximum-acceleration terminal dash that drives the position error between
+    the drone and the target to zero. The position setpoint is pinned to the
+    target, so the large standing position error commands a hard tilt straight
+    along the line of sight. The heading is *held* at the value the drone enters
+    the dash with: yawing to face the target would align the heading with the
+    thrust direction and make the geometric attitude controller (which builds
+    the body frame from heading x thrust) near-singular, stalling the dash.
+
+    Two modes:
+
+    * ``"guided"`` -- no velocity feed-forward. The position-error gain alone
+      sets the tilt, so the dash naturally decelerates as it converges: a
+      precise, soft-ish touch on the target.
+    * ``"terminal"`` -- a committed ballistic dive. A strong velocity
+      feed-forward along the line of sight is added on top of the pinned
+      setpoint, so the drone accelerates to its tilt limit and plows through
+      the target at high closing speed (a hard kill), sacrificing the gentle
+      convergence of the guided mode.
+
+    The safety filter is relaxed (``Setpoint.relax_safety``) so separation does
+    not brake the dash. Impact is detected against the swept segment between
+    consecutive positions, so a fast terminal pass cannot tunnel through the
+    hit sphere between control steps.
 """
 import numpy as np
 
@@ -22,8 +38,8 @@ class Strike(BaseBehavior):
 
     name = "strike"
 
-    def reset(self, state, target, dash_speed=1.6, hit_radius=0.12,
-              timeout=10.0, decel_dist=0.4, **_):
+    def reset(self, state, target, mode="guided", dash_speed=3.0,
+              hit_radius=0.15, timeout=10.0, **_):
         """Arm the dash toward ``target``.
 
         Parameters
@@ -33,24 +49,42 @@ class Strike(BaseBehavior):
         target : array-like | callable
             (3,) target position, or a callable ``t -> (3,)`` for a moving
             target (``t`` is seconds since this behavior was reset).
+        mode : {"guided", "terminal"}
+            ``"guided"`` drives a precise position dash (no feed-forward);
+            ``"terminal"`` adds a strong velocity feed-forward for a committed
+            high-speed ballistic dive through the target.
         dash_speed : float
-            Terminal dash speed (m/s); should exceed the cruise speed.
+            Velocity feed-forward magnitude (m/s) for ``"terminal"`` mode;
+            ignored in ``"guided"`` mode.
         hit_radius : float
             Distance (m) under which the strike is considered complete.
         timeout : float
             Safety cap (s) on the dash duration.
-        decel_dist : float
-            Distance (m) over which the dash speed is ramped down on final
-            approach, so the strike converges on the target instead of
-            overshooting through it.
         """
         super().reset(state)
         self.target_fn = target if callable(target) else (lambda _t, p=np.array(target, float): p)
+        self.mode = str(mode)
         self.dash_speed = float(dash_speed)
         self.hit_radius = float(hit_radius)
         self.timeout = float(timeout)
-        self.decel_dist = max(float(decel_dist), 1e-3)
+        # Hold the entry heading (see module docstring) and seed the swept-
+        # segment impact test with the start position.
+        self.yaw = float(state[9])
+        self.prev_pos = np.array(state[POS], dtype=float)
         self.impact = False
+        # Fixed dash axis (entry position -> target), used by terminal mode to
+        # detect the committed fly-through past the target.
+        los0 = np.asarray(self.target_fn(0.0), dtype=float) - self.prev_pos
+        n = float(np.linalg.norm(los0))
+        self.dash_dir = los0 / n if n > 1e-6 else np.zeros(3)
+
+    @staticmethod
+    def _segment_dist(a, b, p):
+        """Minimum distance from point ``p`` to the segment ``a``--``b``."""
+        ab = b - a
+        denom = float(np.dot(ab, ab))
+        t = np.clip(float(np.dot(p - a, ab)) / denom, 0.0, 1.0) if denom > 1e-12 else 0.0
+        return float(np.linalg.norm(a + t * ab - p))
 
     def step(self, state) -> Setpoint:
         tgt = np.asarray(self.target_fn(self.t), dtype=float)
@@ -59,21 +93,27 @@ class Strike(BaseBehavior):
         dist = float(np.linalg.norm(err))
         direction = err / dist if dist > 1e-6 else np.zeros(3)
 
-        # Decel ramp floored at 25% so the feed-forward never stalls on final
-        # approach. Position setpoint is projected just past the target by
-        # hit_radius so the PID error always points through the hit sphere
-        # rather than stopping at it.
-        frac = max(0.25, min(1.0, dist / self.decel_dist))
-        speed = self.dash_speed * frac
-        vel = speed * direction
-        aim = tgt + direction * self.hit_radius
-        yaw = self._yaw_towards(pos, tgt)
+        # Pin the position setpoint to the target; the standing position error
+        # drives a max-tilt dash. In terminal mode add a strong feed-forward
+        # along the line of sight for a committed high-speed impact.
+        vel = self.dash_speed * direction if self.mode == "terminal" else np.zeros(3)
 
-        self.t += self.dt
-        if dist < self.hit_radius:
+        # Swept-segment impact test: catches a fast pass that would otherwise
+        # tunnel through the hit sphere between control steps.
+        if self._segment_dist(self.prev_pos, pos, tgt) < self.hit_radius:
             self.impact = True
             self._done = True
-        elif self.t >= self.timeout:
+        self.prev_pos = pos.copy()
+
+        # Terminal mode is a committed ballistic fly-through: once the drone
+        # has passed the target along the dash axis, the dash is over. Finish
+        # here so the pinned setpoint never pulls the overshot drone back to
+        # the target (a clean miss flies on instead of looping around).
+        if self.mode == "terminal" and float(np.dot(pos - tgt, self.dash_dir)) >= 0.0:
             self._done = True
-        return Setpoint(pos=aim, rpy=np.array([0.0, 0.0, yaw]), vel=vel,
+
+        self.t += self.dt
+        if self.t >= self.timeout:
+            self._done = True
+        return Setpoint(pos=tgt, rpy=np.array([0.0, 0.0, self.yaw]), vel=vel,
                         relax_safety=True)

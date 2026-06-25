@@ -79,14 +79,19 @@ yaw          = towards center (sensor stares inward)
 
 ### Strike
 
-No pre-planning. At each `step`, recomputes the vector from current position to target and pins the position setpoint to the target while pushing a strong velocity feed-forward. Speed is ramped down linearly within `decel_dist` to prevent overshoot.
+No pre-planning. At each `step` the position setpoint is pinned to the (possibly moving) target; the large standing position error drives the controller to its max tilt straight down the line of sight. The entry **heading is held** — yawing to face the target would align the heading with the thrust direction and make the geometric attitude controller (body frame = heading × thrust) near-singular, stalling the dash mid-air (matches altitude, then a long pause).
+
+Two modes (`--strike_mode`):
+
+- **guided** (default) — no velocity feed-forward; the position-error gain alone sets the tilt, so the dash decelerates as it converges for a precise touch (~0.9 m/s impact).
+- **terminal** — a committed ballistic dive: a strong velocity feed-forward (`dash_speed`) is added so the drone accelerates to its tilt limit and plows through the target at high closing speed (~3 m/s impact, faster), trading precision for a hard kill.
 
 ```python
-speed = dash_speed * min(1.0, dist / decel_dist)
-Setpoint(pos=target, vel=speed * direction, relax_safety=True)
+vel = dash_speed * direction if mode == "terminal" else 0
+Setpoint(pos=target, rpy=[0, 0, entry_yaw], vel=vel, relax_safety=True)
 ```
 
-`done` when: `dist < hit_radius` (impact) or `timeout` exceeded.
+`done` when the swept segment between consecutive positions passes within `hit_radius` of the target (so a fast terminal pass cannot tunnel through the hit sphere between control steps), or `timeout` exceeded.
 
 ### Summary
 
@@ -160,7 +165,7 @@ striker  → the closest drone dashes straight onto the target
 others   → hold in place at their loiter positions
 ```
 
-`relax_safety=True` is set on the striker's setpoints so the separation filter does not brake the terminal dash.
+The striker uses the selected `--strike_mode` (`guided` or `terminal`). `relax_safety=True` is set on its setpoints so the separation filter does not brake the dash.
 
 ### Swarm phase summary
 
@@ -192,6 +197,8 @@ Each phase transition is printed to the terminal with its timestamp. A red spher
 |---|---|---|
 | `--behavior` | `all` | `all` \| `transit` \| `recon` \| `loiter` \| `strike` |
 | `--pattern` | `lawnmower` | `lawnmower` \| `spiral` |
+| `--strike_mode` | `guided` | `guided` \| `terminal` |
+| `--view` | `top` | `top` \| `iso` \| `side` \| `follow` |
 | `--gui` | `True` | `True` \| `False` |
 | `--plot` | `True` | `True` \| `False` |
 | `--duration_sec` | `0` | `0` = auto per behavior |
@@ -201,7 +208,7 @@ Each phase transition is printed to the terminal with its timestamp. A red spher
 ```sh
 python tactical.py --behavior recon --pattern spiral
 python tactical.py --behavior all --gui False --plot False   # headless
-python tactical.py --behavior strike --duration_sec 15
+python tactical.py --behavior strike --strike_mode terminal   # committed dive
 ```
 
 ### Multi-drone swarm: `tactical_swarm.py`
@@ -231,6 +238,8 @@ Each drone is assigned its own sub-task per phase; paths are traced in distinct 
 | `--behavior` | `all` | `all` \| `transit` \| `recon` \| `loiter` \| `strike` | — |
 | `--transit_mode` | `formation` | `formation` \| `ring` | `--behavior transit` only |
 | `--recon_mode` | `lawnmower` | `lawnmower` \| `spiral` | `--behavior recon` and `all` |
+| `--strike_mode` | `guided` | `guided` \| `terminal` | `--behavior strike` and `all` |
+| `--view` | `top` | `top` \| `iso` \| `side` \| `follow` | all |
 | `--duration_sec` | `0` | `0` = auto per behavior | all |
 | `--gui` | `True` | `True` \| `False` | all |
 | `--plot` | `True` | `True` \| `False` | all |
@@ -243,6 +252,7 @@ python tactical_swarm.py --num_drones 4
 python tactical_swarm.py --num_drones 4 --recon_mode spiral
 python tactical_swarm.py --behavior transit --transit_mode ring --num_drones 3
 python tactical_swarm.py --behavior recon --recon_mode spiral --num_drones 4
+python tactical_swarm.py --behavior strike --strike_mode terminal --num_drones 4
 python tactical_swarm.py --num_drones 4 --gui False          # headless
 ```
 

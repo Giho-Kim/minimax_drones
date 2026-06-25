@@ -43,6 +43,7 @@ DEFAULT_PLOT = True
 DEFAULT_BEHAVIOR = 'all'
 DEFAULT_TRANSIT_MODE = 'formation'
 DEFAULT_RECON_MODE = 'lawnmower'
+DEFAULT_STRIKE_MODE = 'guided'
 DEFAULT_SIMULATION_FREQ_HZ = 240
 DEFAULT_CONTROL_FREQ_HZ = 48
 DEFAULT_DURATION_SEC = 0            # 0 = auto per behavior
@@ -51,7 +52,17 @@ DEFAULT_COLAB = False
 BEHAVIOR_CHOICES = ['all', 'transit', 'recon', 'loiter', 'strike']
 TRANSIT_MODE_CHOICES = ['formation', 'ring']
 RECON_MODE_CHOICES = ['lawnmower', 'spiral']
+STRIKE_MODE_CHOICES = ['guided', 'terminal']
 AUTO_DURATION = {'all': 50, 'transit': 12, 'recon': 25, 'loiter': 15, 'strike': 15}
+
+DEFAULT_VIEW = 'top'
+VIEW_CHOICES = ['top', 'iso', 'side', 'follow']
+# (distance, yaw, pitch) for static presets
+VIEW_PRESETS = {
+    'top':  (5.0,   0, -89.9),
+    'iso':  (5.0,  45,   -35),
+    'side': (5.0,   0,   -15),
+}
 
 # Fraction of each behavior's velocity feed-forward passed to the PID. The tiny
 # CF2X tends to tip and lose altitude when the feed-forward flips sharply (e.g.
@@ -82,7 +93,8 @@ class _Clock:
     shared = 0.0
 
 
-def build_mission(clock, recon_mode, behavior='all', transit_mode='formation'):
+def build_mission(clock, recon_mode, behavior='all', transit_mode='formation',
+                  strike_mode='guided'):
     """Cooperative mission: one macro per phase, split across the swarm.
 
     Parameters
@@ -94,6 +106,9 @@ def build_mission(clock, recon_mode, behavior='all', transit_mode='formation'):
         Allocation mode for the transit phase when ``behavior="transit"``:
         ``"formation"`` (line-abreast to a waypoint) or ``"ring"`` (spread
         onto the loiter orbit ring). Ignored when ``behavior="all"``.
+    strike_mode : str
+        Strike dash style: ``"guided"`` (precise) or ``"terminal"`` (committed
+        high-speed ballistic dive).
     """
     def tgt(_unused, _clock=clock):
         return target_at(_clock.shared)
@@ -114,8 +129,8 @@ def build_mission(clock, recon_mode, behavior='all', transit_mode='formation'):
                 "params": {"target": tgt, "standoff_alt": orbit_radius,
                            "radius": orbit_radius, "orbit_speed": 0.4, "duration": 8.0}}
     strike   = {"type": BehaviorType.STRIKE, "mode": None,
-                "params": {"target": tgt, "dash_speed": 1.6, "hit_radius": 0.15,
-                           "ring": 0.3, "decel_dist": 0.4}}
+                "params": {"target": tgt, "mode": strike_mode, "dash_speed": 3.0,
+                           "hit_radius": 0.15, "ring": 0.3}}
 
     transit_single = transit_ring if transit_mode == 'ring' else transit1
     full = [transit1, recon, transit_ring, loiter, strike]
@@ -156,7 +171,8 @@ def _init_xyzs(behavior, num_drones, transit_mode='formation'):
 def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYSICS,
         gui=DEFAULT_GUI, record_video=DEFAULT_RECORD_VIDEO, plot=DEFAULT_PLOT,
         recon_mode=DEFAULT_RECON_MODE, behavior=DEFAULT_BEHAVIOR,
-        transit_mode=DEFAULT_TRANSIT_MODE,
+        transit_mode=DEFAULT_TRANSIT_MODE, strike_mode=DEFAULT_STRIKE_MODE,
+        view=DEFAULT_VIEW,
         simulation_freq_hz=DEFAULT_SIMULATION_FREQ_HZ,
         control_freq_hz=DEFAULT_CONTROL_FREQ_HZ,
         duration_sec=DEFAULT_DURATION_SEC, output_folder=DEFAULT_OUTPUT_FOLDER,
@@ -183,9 +199,10 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
                      output_folder=output_folder)
     PYB_CLIENT = env.getPyBulletClient()
 
-    if gui:
-        p.resetDebugVisualizerCamera(cameraDistance=5.0, cameraYaw=0,
-                                     cameraPitch=-89.9,
+    if gui and view in VIEW_PRESETS:
+        dist, yaw, pitch = VIEW_PRESETS[view]
+        p.resetDebugVisualizerCamera(cameraDistance=dist, cameraYaw=yaw,
+                                     cameraPitch=pitch,
                                      cameraTargetPosition=TARGET_START.tolist(),
                                      physicsClientId=PYB_CLIENT)
 
@@ -193,7 +210,8 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
     clock = _Clock()
     coordinator = SwarmCoordinator(num_drones=num_drones,
                                    ctrl_freq=control_freq_hz,
-                                   mission=build_mission(clock, recon_mode, behavior, transit_mode))
+                                   mission=build_mission(clock, recon_mode, behavior,
+                                                          transit_mode, strike_mode))
     ctrl = [DSLPIDControl(drone_model=drone) for _ in range(num_drones)]
 
     #### Visual-only markers ###################################
@@ -206,6 +224,7 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
                                           baseVisualShapeIndex=vis,
                                           basePosition=TARGET_START.tolist(),
                                           physicsClientId=PYB_CLIENT)
+    if gui:
         recon_vis = p.createVisualShape(p.GEOM_SPHERE, radius=0.08,
                                         rgbaColor=[0, 0.5, 1, 1], physicsClientId=PYB_CLIENT)
         recon_marker = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1,
@@ -222,6 +241,8 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
     action = np.zeros((num_drones, 4))
     prev_pos = INIT_XYZS.copy()
     prev_phase = None
+    strike_body = None  # rigid body spawned only when strike begins
+    strike_hit = False  # becomes True the moment any drone contacts the strike body
     START = time.time()
     for i in range(0, int(duration_sec * env.CTRL_FREQ)):
         clock.shared = i / env.CTRL_FREQ
@@ -249,17 +270,65 @@ def run(drone=DEFAULT_DRONE, num_drones=DEFAULT_NUM_DRONES, physics=DEFAULT_PHYS
                 target_vel=FEEDFORWARD * setpoints[k].vel,
             )
 
+        #### Strike: rigid target tracks path until contact #####
+        in_strike = (macro is not None and macro["type"] == BehaviorType.STRIKE)
+        if in_strike:
+            if strike_body is None:
+                s_col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.08,
+                                               physicsClientId=PYB_CLIENT)
+                s_vis = (p.createVisualShape(p.GEOM_SPHERE, radius=0.08,
+                                             rgbaColor=[1, 0, 0, 1],
+                                             physicsClientId=PYB_CLIENT) if gui else -1)
+                strike_body = p.createMultiBody(baseMass=0.5,
+                                                baseCollisionShapeIndex=s_col,
+                                                baseVisualShapeIndex=s_vis,
+                                                basePosition=target_at(clock.shared).tolist(),
+                                                physicsClientId=PYB_CLIENT)
+                p.changeDynamics(strike_body, -1, linearDamping=0.9, angularDamping=0.9,
+                                 physicsClientId=PYB_CLIENT)
+                if gui:
+                    p.resetBasePositionAndOrientation(target_marker, [1000, 0, 0],
+                                                      [0, 0, 0, 1], physicsClientId=PYB_CLIENT)
+            if not strike_hit:
+                # Find first striker whose behavior flagged impact this step
+                hit_k = next((k for k, m in enumerate(coordinator.managers)
+                              if getattr(m.current, 'impact', False)), None)
+                if hit_k is not None:
+                    strike_hit = True
+                    drone_vel = np.array(obs[hit_k][10:13])
+                    # Knock target in the direction the striking drone was flying
+                    p.resetBaseVelocity(strike_body, drone_vel.tolist(), [0, 0, 0],
+                                        physicsClientId=PYB_CLIENT)
+                    # Knock that drone back
+                    knock = (-drone_vel * 1.5 - np.array([0, 0, 2.0])).tolist()
+                    p.resetBaseVelocity(int(env.getDroneIds()[hit_k]), knock, [0, 0, 0],
+                                        physicsClientId=PYB_CLIENT)
+                else:
+                    tgt_pos = target_at(clock.shared)
+                    p.resetBasePositionAndOrientation(strike_body, tgt_pos.tolist(),
+                                                      [0, 0, 0, 1], physicsClientId=PYB_CLIENT)
+                    p.resetBaseVelocity(strike_body, [0, 0, 0], [0, 0, 0],
+                                        physicsClientId=PYB_CLIENT)
+
         #### Visualization #####################################
         if gui:
-            tgt = target_at(clock.shared)
-            p.resetBasePositionAndOrientation(target_marker, tgt.tolist(),
-                                              [0, 0, 0, 1], physicsClientId=PYB_CLIENT)
+            if not in_strike:
+                tgt = target_at(clock.shared)
+                p.resetBasePositionAndOrientation(target_marker, tgt.tolist(),
+                                                  [0, 0, 0, 1], physicsClientId=PYB_CLIENT)
             for k in range(num_drones):
                 cur = obs[k][0:3]
                 p.addUserDebugLine(prev_pos[k].tolist(), cur.tolist(),
                                    lineColorRGB=DRONE_COLORS[k % len(DRONE_COLORS)],
                                    lineWidth=2, lifeTime=0, physicsClientId=PYB_CLIENT)
                 prev_pos[k] = cur.copy()
+            if view == 'follow':
+                # Track the centroid of the swarm.
+                centroid = obs[:, 0:3].mean(axis=0).tolist()
+                p.resetDebugVisualizerCamera(cameraDistance=3.0, cameraYaw=0,
+                                             cameraPitch=-45,
+                                             cameraTargetPosition=centroid,
+                                             physicsClientId=PYB_CLIENT)
 
         #### Log ###############################################
         for k in range(num_drones):
@@ -296,7 +365,11 @@ if __name__ == "__main__":
     parser.add_argument('--transit_mode', default=DEFAULT_TRANSIT_MODE, type=str, choices=TRANSIT_MODE_CHOICES,
                         help='Transit allocation mode: formation | ring (default: formation)', metavar='')
     parser.add_argument('--recon_mode', default=DEFAULT_RECON_MODE, type=str, choices=RECON_MODE_CHOICES,
-                        help='Recon allocation mode: band | sector (default: band)', metavar='')
+                        help='Recon allocation mode: lawnmower | spiral (default: lawnmower)', metavar='')
+    parser.add_argument('--strike_mode', default=DEFAULT_STRIKE_MODE, type=str, choices=STRIKE_MODE_CHOICES,
+                        help='Strike dash: guided | terminal (default: guided)', metavar='')
+    parser.add_argument('--view', default=DEFAULT_VIEW, type=str, choices=VIEW_CHOICES,
+                        help='Camera view: top | iso | side | follow (default: top)', metavar='')
     parser.add_argument('--simulation_freq_hz', default=DEFAULT_SIMULATION_FREQ_HZ, type=int,
                         help='Simulation frequency in Hz (default: 240)', metavar='')
     parser.add_argument('--control_freq_hz', default=DEFAULT_CONTROL_FREQ_HZ, type=int,
